@@ -289,7 +289,7 @@ EDIST v3.2 [管理员模式]
   },
   "features": {
     "auto_update": true,
-    "update_server_url": "https://347735.xyz/genxin/",
+    "update_server_url": "https://347735.xyz/genxin/,
     "logging_enabled": true,
     "auto_backup": true
   }
