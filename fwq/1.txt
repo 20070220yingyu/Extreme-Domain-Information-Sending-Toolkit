@@ -1,0 +1,111 @@
+import sys
+import os
+import json
+import tempfile
+import shutil
+import zipfile
+import hashlib
+import subprocess
+import requests
+from packaging import version
+
+# ==================== 配置区 ====================
+CURRENT_VERSION = "1.0.0"                     # 当前程序版本
+UPDATE_API_URL = "https://347735.xyz/latest.php"   # PHP 接口地址
+# ===============================================
+
+def download_file(url, dest_path):
+    """下载文件，返回是否成功"""
+    try:
+        r = requests.get(url, stream=True, timeout=30)
+        r.raise_for_status()
+        with open(dest_path, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+        return True
+    except Exception as e:
+        print(f"下载失败: {e}")
+        return False
+
+def verify_hash(filepath, expected_hash):
+    """校验文件 SHA256（格式: 'sha256:xxxxx'）"""
+    if not expected_hash or ':' not in expected_hash:
+        return True  # 未提供哈希，跳过校验
+    algo, value = expected_hash.split(':')
+    h = hashlib.new(algo)
+    with open(filepath, 'rb') as f:
+        while chunk := f.read(8192):
+            h.update(chunk)
+    return h.hexdigest() == value
+
+def extract_zip(zip_path, extract_to):
+    """解压 zip 到指定目录"""
+    with zipfile.ZipFile(zip_path, 'r') as zf:
+        zf.extractall(extract_to)
+
+def is_packaged():
+    """判断当前是否运行在 PyInstaller 打包后的 exe 中"""
+    return hasattr(sys, '_MEIPASS')
+
+def check_and_update():
+    """检查更新，如有新版本则下载并触发更新"""
+    # 1. 请求版本信息
+    try:
+        resp = requests.get(UPDATE_API_URL, timeout=10)
+        data = resp.json()
+        if not data.get('success'):
+            print("检查更新失败:", data.get('error', '未知错误'))
+            return
+    except Exception as e:
+        print(f"网络错误，无法检查更新: {e}")
+        return
+
+    latest_version = data['version']
+    if version.parse(latest_version) <= version.parse(CURRENT_VERSION):
+        print("当前已是最新版本")
+        return
+
+    print(f"发现新版本 {latest_version}，开始下载...")
+
+    # 2. 下载 zip 到临时目录
+    tmp_dir = tempfile.gettempdir()
+    zip_filename = data['filename']
+    zip_path = os.path.join(tmp_dir, zip_filename)
+    if not download_file(data['download_url'], zip_path):
+        return
+
+    # 3. 校验哈希
+    if not verify_hash(zip_path, data.get('file_hash')):
+        print("文件校验失败，放弃更新")
+        os.remove(zip_path)
+        return
+
+    # 4. 解压
+    extract_dir = tempfile.mkdtemp(prefix='update_')
+    try:
+        extract_zip(zip_path, extract_dir)
+    except Exception as e:
+        print(f"解压失败: {e}")
+        os.remove(zip_path)
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        return
+    finally:
+        os.remove(zip_path)  # 删除临时 zip
+
+    # 5. 启动更新器并退出主程序
+    if not is_packaged():
+        # 源码运行环境：仅提示，无法自动替换（可在此处理源码更新，如 git pull）
+        print(f"新版本已下载到 {extract_dir}，请手动替换文件并重启")
+        # 也可以用 webbrowser 打开下载页面
+        return
+
+    # 打包后运行环境
+    current_dir = os.path.dirname(sys.executable)
+    updater_path = os.path.join(current_dir, 'updater.exe')
+    if not os.path.exists(updater_path):
+        print("更新器缺失，无法自动更新，请手动安装")
+        return
+
+    print("正在准备更新，程序将自动重启...")
+    subprocess.Popen([updater_path, extract_dir, current_dir])
+    sys.exit(0)  # 主程序立即退出，剩下的事交给更新器
